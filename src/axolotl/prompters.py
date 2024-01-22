@@ -96,6 +96,13 @@ class AlpacaPrompter(Prompter):
             full_prompt=self._build_result("{instruction}", "{input}", "{output}")
         )
 
+class SpeakleashPrompter(AlpacaPrompter):
+    """
+    Prompter for Speakleash
+    """
+    system_prompt = "Poniżej znajduje się instrukcja opisująca zadanie, wraz z dodatkowym kontekstem. Napisz odpowiedź, która odpowiednio zakończy prośbę."
+    system_no_input_prompt = "Poniżej znajduje się instrukcja opisująca zadanie. Napisz odpowiedź, która odpowiednio zakończy prośbę."
+
 
 class UnpromptedPrompter(AlpacaPrompter):
     """

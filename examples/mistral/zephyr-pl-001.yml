@@ -1,0 +1,79 @@
+
+base_model: HuggingFaceH4/zephyr-7b-beta
+# model_type: MistralForCausalLM
+tokenizer_type: LlamaTokenizer
+is_mistral_derived_model: true
+
+load_in_8bit: false
+load_in_4bit: true
+strict: false
+
+# datasets:
+#   - path: klima7/polish-prose
+#     type: completion
+#   - path: Lajonbot/alpaca-dolly-chrisociepa-instruction-only-polish
+#     type: alpaca
+
+datasets:
+  - path: /home/kamil/4t/spichlerz/axolotl/dataset/5k.jsonl
+    type: speakleash
+  
+dataset_prepared_path:   
+val_set_size: 0.01
+output_dir: ./output/zephyr-pl-001
+adapter: qlora
+lora_model_dir:
+# 16384 8192 4096  2048
+sequence_len: 4096
+sample_packing: true
+pad_to_sequence_len: true
+lora_r: 32
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target_modules:
+lora_target_linear: true
+lora_fan_in_fan_out:
+
+wandb_project: spichlerz
+wandb_entity:
+wandb_watch:
+wandb_run_id:
+wandb_log_model:
+
+gradient_accumulation_steps: 2
+micro_batch_size: 1
+num_epochs: 8
+optimizer: adamw_bnb_8bit
+lr_scheduler: cosine
+learning_rate: 0.0002
+
+train_on_inputs: false
+group_by_length: false
+bf16: true
+fp16: false
+tf32: false
+gradient_checkpointing: true
+early_stopping_patience:
+resume_from_checkpoint: 
+local_rank:
+logging_steps: 1
+xformers_attention:
+flash_attention: true
+main_process_port: 0
+warmup_steps: 10
+eval_steps: 20
+save_steps:
+debug:
+# deepspeed:
+deepspeed: deepspeed/zero2.json
+weight_decay: 0.0
+fsdp:
+fsdp_config:
+special_tokens:
+  bos_token: "<s>"
+  eos_token: "</s>"
+  unk_token: "<unk>"
+# info : 740kwh start
+# a
+# a
+# a

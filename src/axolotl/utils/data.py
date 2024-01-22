@@ -29,6 +29,7 @@ from axolotl.prompt_tokenizers import (
     JeopardyPromptTokenizingStrategy,
     OpenAssistantPromptTokenizingStrategy,
     SummarizeTLDRPromptTokenizingStrategy,
+    SpeakleashPromptTokenizingStrategy
 )
 from axolotl.prompters import (
     AlpacaPrompter,
@@ -39,6 +40,7 @@ from axolotl.prompters import (
     Prompter,
     ReflectAlpacaPrompter,
     SummarizeTLDRPrompter,
+    SpeakleashPrompter,
     UnsupportedPrompter,
 )
 from axolotl.utils.collators import PretrainingBatchSamplerDataCollatorForSeq2Seq
@@ -515,6 +517,20 @@ def get_dataset_wrapper(
     elif d_base_type == "alpaca":
         dataset_prompter = AlpacaPrompter(d_prompt_style)
         ds_strategy = AlpacaPromptTokenizingStrategy(
+            dataset_prompter,
+            tokenizer,
+            cfg.train_on_inputs,
+            cfg.sequence_len,
+        )
+        ds_wrapper = TokenizedPromptDataset(
+            ds_strategy,
+            dataset,
+            **ds_kwargs,
+        )
+        dataset_wrapper = ds_wrapper
+    elif d_base_type == "speakleash":
+        dataset_prompter = SpeakleashPrompter(d_prompt_style)
+        ds_strategy = SpeakleashPromptTokenizingStrategy(
             dataset_prompter,
             tokenizer,
             cfg.train_on_inputs,

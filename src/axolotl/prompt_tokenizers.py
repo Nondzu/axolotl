@@ -443,6 +443,20 @@ class ShareGPTPromptTokenizingStrategy(PromptTokenizingStrategy):
             raise InvalidDataException(str(err)) from err
 
 
+
+class SpeakleashPromptTokenizingStrategy(InstructionPromptTokenizingStrategy):
+    """
+    Tokenizing strategy for Speakleash prompts.
+    """
+
+    def parse_instruction_fields(self, prompt) -> Tuple[str, str, str]:
+        return (
+            prompt["instruct"],
+            prompt["input"] if "input" in prompt else "",
+            prompt["output"],
+        )
+
+
 def tokenize_prompt_default() -> Tuple[Dict[str, List[int]], int]:
     """
     Returns the default values for the tokenize prompt function
