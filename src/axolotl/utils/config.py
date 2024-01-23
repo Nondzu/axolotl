@@ -70,6 +70,8 @@ def normalize_config(cfg):
         else:
             LOG.debug("bf16 support not detected, disabling for this configuration.")
             cfg.bf16 = False
+            if cfg.fp16 is None:
+                cfg.fp16 = True
 
     if cfg.device == "mps":
         cfg.load_in_8bit = False
@@ -79,6 +81,8 @@ def normalize_config(cfg):
         cfg.bf16 = False
     else:
         torch.backends.cuda.matmul.allow_tf32 = cfg.tf32 or False
+        if cfg.bf16:
+            cfg.fp16 = False
 
     if cfg.bf16 or cfg.bfloat16:
         cfg.torch_dtype = torch.bfloat16
@@ -142,23 +146,25 @@ def normalize_config(cfg):
     )
 
     cfg.is_qwen_derived_model = (
-        (
-            hasattr(model_config, "model_type")
-            and model_config.model_type
-            in [
-                "qwen",
-            ]
-        )
-        or cfg.is_qwen_derived_model
-        or "qwen" in cfg.base_model.lower()
-        or (cfg.model_type and "qwen" in cfg.model_type.lower())
-    )
+        hasattr(model_config, "model_type")
+        and model_config.model_type
+        in [
+            "qwen",
+        ]
+    ) or cfg.is_qwen_derived_model
 
     if isinstance(cfg.learning_rate, str):
         cfg.learning_rate = float(cfg.learning_rate)
 
     if isinstance(cfg.pretraining_dataset, dict):
         cfg.pretraining_dataset = [cfg.pretraining_dataset]
+
+    if (
+        cfg.gradient_checkpointing
+        and cfg.unfrozen_parameters is None
+        and cfg.gradient_checkpointing_kwargs is None
+    ):
+        cfg.gradient_checkpointing_kwargs = {"use_reentrant": True}
 
     log_gpu_memory_usage(LOG, "baseline", cfg.device)
 
@@ -512,6 +518,11 @@ def validate_config(cfg):
                     raise ValueError(
                         "bf16.enabled or fp16.enabled must be set to true when using ZeRO-3 with flash-attention"
                     )
+
+    if cfg.test_datasets and cfg.val_set_size:
+        raise ValueError(
+            "non-zero val_set_size should not be used with test_datasets configuration"
+        )
 
     # TODO
     # MPT 7b

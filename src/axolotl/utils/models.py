@@ -2,7 +2,7 @@
 import logging
 import math
 import os
-from typing import Any, Optional, Tuple, Union  # noqa: F401
+from typing import Any, Dict, Optional, Tuple, Union  # noqa: F401
 
 import addict
 import bitsandbytes as bnb
@@ -76,10 +76,15 @@ def load_model_config(cfg):
     if not model_config_name and cfg.tokenizer_config:
         model_config_name = cfg.tokenizer_config
     trust_remote_code = cfg.trust_remote_code is True
+    config_kwargs = {}
+    if cfg.model_revision:
+        config_kwargs["revision"] = cfg.model_revision
 
     try:
         model_config = AutoConfig.from_pretrained(
-            model_config_name, trust_remote_code=trust_remote_code
+            model_config_name,
+            trust_remote_code=trust_remote_code,
+            **config_kwargs,
         )
     except ValueError as err:
         if "mamba" in model_config_name:
@@ -329,13 +334,33 @@ def load_model(
         LOG.info("patching mixtral with flash attention")
         replace_mixtral_attn_with_multipack_flash_attn()
 
+    if cfg.model_config_type == "falcon" and cfg.flash_attention and cfg.sample_packing:
+        from axolotl.monkeypatch.falcon import (
+            replace_falcon_attn_with_multipack_flash_attn,
+        )
+
+        LOG.info("patching falcon with flash attention")
+        replace_falcon_attn_with_multipack_flash_attn()
+
+    if cfg.model_config_type == "qwen2" and cfg.flash_attention and cfg.sample_packing:
+        from axolotl.monkeypatch.qwen2 import (
+            replace_qwen2_attn_with_multipack_flash_attn,
+        )
+
+        LOG.info("patching qwen2 with flash attention")
+        replace_qwen2_attn_with_multipack_flash_attn()
+
     if cfg.is_llama_derived_model and cfg.sample_packing and not inference:
         from axolotl.monkeypatch.llama_expand_mask import hijack_expand_mask
 
         LOG.info("patching _expand_mask")
         hijack_expand_mask()
 
-    model_kwargs = {}
+    model_kwargs: Dict[str, Any] = {}
+
+    if cfg.model_kwargs:
+        for key, val in model_kwargs.items():
+            model_kwargs[key] = val
 
     max_memory = cfg.max_memory
     device_map = cfg.device_map
@@ -417,18 +442,13 @@ def load_model(
         if not cfg.sample_packing:
             if cfg.s2_attention:
                 pass
-            if (
-                cfg.is_llama_derived_model
-                or cfg.is_falcon_derived_model
-                or cfg.is_mistral_derived_model
-                or model_config.model_type == "mixtral"
-            ):
-                model_kwargs["attn_implementation"] = "flash_attention_2"
-                model_config._attn_implementation = (  # pylint: disable=protected-access
-                    "flash_attention_2"
-                )
+            # most other models support flash attention, we can define exceptions as they come up
+            model_kwargs["attn_implementation"] = "flash_attention_2"
+            model_config._attn_implementation = (  # pylint: disable=protected-access
+                "flash_attention_2"
+            )
         else:
-            if model_config.model_type == "mixtral":
+            if model_config.model_type in ["mixtral", "qwen2", "falcon"]:
                 model_kwargs["attn_implementation"] = "flash_attention_2"
                 model_config._attn_implementation = (  # pylint: disable=protected-access
                     "flash_attention_2"
@@ -444,7 +464,11 @@ def load_model(
             model_config.fused_dense = True
 
     try:
-        if cfg.is_llama_derived_model and not cfg.trust_remote_code and not cfg.gptq:
+        if (
+            model_config.model_type == "llama"
+            and not cfg.trust_remote_code
+            and not cfg.gptq
+        ):
             from transformers import LlamaForCausalLM
 
             model = LlamaForCausalLM.from_pretrained(
@@ -658,7 +682,12 @@ def load_model(
 
     lora_config = None
     if not reference_model or cfg.lora_model_dir:
-        model, lora_config = load_adapter(model, cfg, cfg.adapter)
+        # if we're not loading the reference model, then we're loading the model for training
+        # then the dpo trainer doesn't want the peft model loaded over it, it just wants the lora/peft config
+        if cfg.adapter and cfg.rl in ["dpo", "ipo", "kto_pair"] and not cfg.merge_lora:
+            _, lora_config = load_lora(model, cfg, inference=False, config_only=True)
+        else:
+            model, lora_config = load_adapter(model, cfg, cfg.adapter)
 
     if cfg.ddp and not load_in_8bit and not (cfg.rl and cfg.load_in_4bit):
         model.to(f"cuda:{cfg.local_rank}")
@@ -738,14 +767,16 @@ def find_all_linear_names(model):
             names = name.split(".")
             lora_module_names.add(names[0] if len(names) == 1 else names[-1])
 
-    if "lm_head" in lora_module_names:  # needed for 16-bit
-        lora_module_names.remove("lm_head")
+    embedding_modules = get_linear_embedding_layers(model.config.model_type)
+    output_embedding = embedding_modules[1]
+    if output_embedding in lora_module_names:  # needed for 16-bit
+        lora_module_names.remove(output_embedding)
 
     return list(lora_module_names)
 
 
-def load_lora(model, cfg, inference=False):
-    # type: (PreTrainedModel, DictDefault, bool) -> Tuple[PreTrainedModel, Optional[PeftConfig]]
+def load_lora(model, cfg, inference=False, config_only=False):
+    # type: (PreTrainedModel, DictDefault, bool, bool) -> Tuple[Optional[PreTrainedModel], Optional[PeftConfig]]
 
     from peft import LoraConfig, PeftModel, get_peft_model
 
@@ -767,6 +798,9 @@ def load_lora(model, cfg, inference=False):
         bias="none",
         task_type="CAUSAL_LM",
     )
+
+    if config_only:
+        return None, lora_config
 
     if cfg.lora_model_dir:
         LOG.debug("Loading pretained PEFT - LoRA")

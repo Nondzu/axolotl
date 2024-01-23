@@ -4,7 +4,7 @@ import hashlib
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 from datasets import (
@@ -21,6 +21,7 @@ from transformers import PreTrainedTokenizerBase
 from axolotl.common.const import DEFAULT_DATASET_PREPARED_PATH
 from axolotl.datasets import TokenizedPromptDataset
 from axolotl.prompt_strategies import load
+from axolotl.prompt_strategies.dpo import load as load_dpo
 from axolotl.prompt_tokenizers import (
     AlpacaMultipleChoicePromptTokenizingStrategy,
     AlpacaPromptTokenizingStrategy,
@@ -67,9 +68,17 @@ def prepare_dataset(cfg, tokenizer):
     prompters = []
     if not cfg.pretraining_dataset:
         with zero_first(is_main_process()):
-            train_dataset, eval_dataset, prompters = load_prepare_datasets(
-                tokenizer, cfg, DEFAULT_DATASET_PREPARED_PATH
-            )
+            if cfg.test_datasets:
+                train_dataset, _, prompters = load_prepare_datasets(
+                    tokenizer, cfg, DEFAULT_DATASET_PREPARED_PATH, split="train"
+                )
+                _, eval_dataset, _ = load_prepare_datasets(
+                    tokenizer, cfg, DEFAULT_DATASET_PREPARED_PATH, split="test"
+                )
+            else:
+                train_dataset, eval_dataset, prompters = load_prepare_datasets(
+                    tokenizer, cfg, DEFAULT_DATASET_PREPARED_PATH
+                )
     else:
         path = cfg.pretraining_dataset
         name = None
@@ -110,19 +119,29 @@ def prepare_dataset(cfg, tokenizer):
 
 
 def load_tokenized_prepared_datasets(
-    tokenizer, cfg, default_dataset_prepared_path
+    tokenizer,
+    cfg,
+    default_dataset_prepared_path,
+    split="train",
 ) -> Tuple[DatasetDict, List[Prompter]]:
+    cfg_datasets = cfg.test_datasets if split == "test" else cfg.datasets
     tokenizer_name = tokenizer.__class__.__name__
     ds_hash = str(
         md5(
             (
                 str(cfg.sequence_len)
                 + "@"
+                + str(cfg.sample_packing)
+                + "@"
+                + str(cfg.eval_sample_packing)
+                + "@"
+                + str(cfg.group_by_length)
+                + "@"
                 + "|".join(
                     sorted(
                         [
                             f"{d.path}:{d.type}:{d.shards}:{d.conversation}"
-                            for d in cfg.datasets
+                            for d in cfg_datasets
                         ]
                     )
                 )
@@ -145,7 +164,7 @@ def load_tokenized_prepared_datasets(
                 f"{cfg.push_dataset_to_hub}/{ds_hash}",
                 token=use_auth_token,
             )
-            dataset = dataset["train"]
+            dataset = dataset[split]
     except Exception:  # pylint: disable=broad-except # nosec
         pass
 
@@ -164,7 +183,7 @@ def load_tokenized_prepared_datasets(
         LOG.info("Loading raw datasets...")
         if not cfg.is_preprocess:
             LOG.warning(
-                "Processing datasets during training can lead to VRAM instability. Please pre-process your dataset"
+                "Processing datasets during training can lead to VRAM instability. Please pre-process your dataset."
             )
 
         if cfg.seed:
@@ -184,8 +203,8 @@ def load_tokenized_prepared_datasets(
                     yield dataset
 
         # pylint: disable=invalid-name
-        for config_dataset in for_d_in_datasets(cfg.datasets):
-            ds: Union[Dataset, DatasetDict] = None
+        for config_dataset in for_d_in_datasets(cfg_datasets):
+            ds: Optional[Union[Dataset, DatasetDict]] = None
             ds_from_hub = False
             try:
                 load_dataset(
@@ -338,16 +357,6 @@ def load_tokenized_prepared_datasets(
                 )
             if not ds:
                 raise ValueError("unhandled dataset load")
-            # support for using a subset of the data
-            if config_dataset.shards:
-                if "train" in ds:
-                    ds = ds.shuffle(seed=seed)["train"].shard(
-                        num_shards=config_dataset.shards, index=0
-                    )
-                else:
-                    ds = ds.shuffle(seed=seed).shard(
-                        num_shards=config_dataset.shards, index=0
-                    )
 
             d_base_type = d_prompt_style = None
             d_type = config_dataset.type
@@ -355,17 +364,21 @@ def load_tokenized_prepared_datasets(
                 d_type_split = d_type.split(":")
                 d_base_type = d_type_split[0]
                 d_prompt_style = d_type_split[1] if len(d_type_split) > 1 else None
-            if "train" in ds:
-                ds = ds["train"]
-            elif (
-                isinstance(ds, DatasetDict)
-                and config_dataset.train_on_split
-                and config_dataset.train_on_split in ds
-            ):
-                ds = ds[config_dataset.train_on_split]
+
+            if config_dataset.split and config_dataset.split in ds:
+                ds = ds[config_dataset.split]
+            elif split in ds:
+                ds = ds[split]
             elif isinstance(ds, DatasetDict):
                 raise ValueError(
-                    f"no train split found for dataset {config_dataset.path}, you may specify a split with 'train_on_split: `"
+                    f"no {split} split found for dataset {config_dataset.path}, you may specify a split with 'split: `"
+                )
+
+            # support for using a subset of the data
+            if config_dataset.shards:
+                shards_idx = config_dataset.get("shards_idx", 0)
+                ds = ds.shuffle(seed=seed).shard(
+                    num_shards=config_dataset.shards, index=shards_idx
                 )
 
             dataset_wrapper, dataset_prompter = get_dataset_wrapper(
@@ -424,6 +437,7 @@ def load_prepare_datasets(
     tokenizer: PreTrainedTokenizerBase,
     cfg,
     default_dataset_prepared_path,
+    split="train",
 ) -> Tuple[Dataset, Dataset, List[Prompter]]:
     dataset, prompters = load_tokenized_prepared_datasets(
         tokenizer, cfg, default_dataset_prepared_path
@@ -438,7 +452,7 @@ def load_prepare_datasets(
             index=cfg.dataset_shard_idx,
         )
 
-    if cfg.val_set_size:
+    if split == "train" and cfg.val_set_size:
         # ensure we end up with the same fingerprint by doing rank0 first and being able to cache
         to_hash_train = (
             dataset._fingerprint  # pylint: disable=protected-access
@@ -471,6 +485,9 @@ def load_prepare_datasets(
 
         train_dataset = dataset["train"]
         eval_dataset = dataset["test"]
+    elif split == "test":
+        train_dataset = None
+        eval_dataset = dataset
     else:
         train_dataset = dataset
         eval_dataset = None
@@ -792,6 +809,7 @@ def load_pretraining_dataset(path, tokenizer, cfg, name=None, max_tokens=2048, s
         # remove all the existing columns after mapping since they end up having
         # a different length than the encoded/tokenized column
         remove_columns=dataset.features.keys(),
+        desc="Encoding Pretraining",
     )
     return dataset
 
@@ -849,3 +867,50 @@ def encode_packed_pretraining(
             chunked_data[feature].append(collated_features[feature].squeeze(0))
 
     return chunked_data
+
+
+def load_prepare_dpo_datasets(cfg):
+    def load_split(dataset_cfgs, _cfg):
+        split_datasets: List[Any] = []
+        for i, ds_cfg in enumerate(dataset_cfgs):
+            if ds_cfg["ds_type"] == "json":
+                for data_file in ds_cfg["data_files"]:
+                    data_files = {ds_cfg["split"]: data_file}
+                    ds = load_dataset(  # pylint: disable=invalid-name
+                        "json",
+                        data_files=data_files,
+                        split=ds_cfg["split"],
+                    )
+                    split_datasets.insert(i, ds)
+            else:
+                ds = load_dataset(  # pylint: disable=invalid-name
+                    ds_cfg["path"],
+                    split=ds_cfg["split"],
+                )
+                split_datasets.insert(i, ds)
+
+        for i, data_set in enumerate(split_datasets):
+            _type = dataset_cfgs[i]["type"]
+            if _type:
+                ds_transform_fn = load_dpo(_type, _cfg)
+                split_datasets[i] = data_set.map(
+                    ds_transform_fn,
+                    desc="Mapping RL Dataset",
+                )
+            else:
+                # If no `type` is provided, assume the dataset is already in the expected format with
+                # "prompt", "chosen" and "rejected" already preprocessed
+                split_datasets[i] = data_set
+
+        return concatenate_datasets(split_datasets)
+
+    with zero_first(is_main_process()):
+        train_dataset = load_split(cfg.datasets, cfg)
+
+        eval_dataset = None
+        if cfg.test_datasets:
+            eval_dataset = load_split(cfg.test_datasets, cfg)
+        if not eval_dataset:
+            eval_dataset = None
+
+    return train_dataset, eval_dataset
