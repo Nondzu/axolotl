@@ -78,7 +78,11 @@ def do_merge_lora(
 
     LOG.info("running merge of LoRA with base model")
     model = model.merge_and_unload(progressbar=True)
-    model.to(dtype=cfg.torch_dtype)
+    try:
+        model.to(dtype=cfg.torch_dtype)
+    except RuntimeError:
+        pass
+    model.generation_config.do_sample = True
 
     if cfg.local_rank == 0:
         LOG.info(f"saving merged model to: {str(Path(cfg.output_dir) / 'merged')}")
@@ -362,6 +366,13 @@ def check_accelerate_default_config():
 
 
 def check_user_token():
+    # Skip check if HF_HUB_OFFLINE is set to True
+    if os.getenv("HF_HUB_OFFLINE") == "1":
+        LOG.info(
+            "Skipping HuggingFace token verification because HF_HUB_OFFLINE is set to True. Only local files will be used."
+        )
+        return True
+
     # Verify if token is valid
     api = HfApi()
     try:

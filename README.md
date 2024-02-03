@@ -37,6 +37,9 @@ Features:
   - [Inference](#inference)
   - [Merge LORA to Base](#merge-lora-to-base)
   - [Special Tokens](#special-tokens)
+- Advanced Topics
+  - [Multipack](./docs/multipack.md)<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M17 13.5v6H5v-12h6m3-3h6v6m0-6-9 9" class="icon_svg-stroke" stroke="#666" stroke-width="1.5" fill="none" fill-rule="evenodd" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+  - [RLHF & DPO](./docs/rlhf.md)<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M17 13.5v6H5v-12h6m3-3h6v6m0-6-9 9" class="icon_svg-stroke" stroke="#666" stroke-width="1.5" fill="none" fill-rule="evenodd" stroke-linecap="round" stroke-linejoin="round"></path></svg>
 - [Common Errors](#common-errors-)
   - [Tokenization Mismatch b/w Training & Inference](#tokenization-mismatch-bw-inference--training)
 - [Debugging Axolotl](#debugging-axolotl)
@@ -105,6 +108,9 @@ pip3 install -e '.[flash-attn,deepspeed]'
 
 ### Usage
 ```bash
+# preprocess datasets - optional but recommended
+CUDA_VISIBLE_DEVICES="" python -m axolotl.cli.preprocess examples/openllama-3b/lora.yml
+
 # finetune lora
 accelerate launch -m axolotl.cli.train examples/openllama-3b/lora.yml
 
@@ -604,12 +610,25 @@ datasets:
       # For `completion` datsets only, uses the provided field instead of `text` column
       field:
 
+# A list of one or more datasets to eval the model with.
+# You can use either test_datasets, or val_set_size, but not both.
+test_datasets:
+  - path: /workspace/data/eval.jsonl
+    ds_type: json
+    # You need to specify a split. For "json" datasets the default split is called "train".
+    split: train
+    type: completion
+    data_files:
+      - /workspace/data/eval.jsonl
+
 # use RL training: dpo, ipo, kto_pair
 rl:
 
 # Saves the desired chat template to the tokenizer_config.json for easier inferencing
 # Currently supports chatml and inst (mistral/mixtral)
 chat_template: chatml
+# Changes the default system message
+default_system_message: You are a helpful assistant. Please give a long and detailed answer. # Currently only supports chatml.
 # Axolotl attempts to save the dataset as an arrow after packing the data together so
 # subsequent training attempts load faster, relative path
 dataset_prepared_path: data/last_run_prepared
@@ -690,6 +709,12 @@ lora_modules_to_save:
 #  - lm_head
 
 lora_fan_in_fan_out: false
+
+peft:
+  # Configuration options for loftq initialization for LoRA
+  # https://huggingface.co/docs/peft/developer_guides/quantization#loftq-initialization
+  loftq_config:
+    loftq_bits:  # typically 4 bits
 
 # ReLoRA configuration
 # Must use either 'lora' or 'qlora' adapter, and does not support fsdp or deepspeed
@@ -858,7 +883,7 @@ tokens:
 fsdp:
 fsdp_config:
 
-# Deepspeed config path. e.g., deepspeed/zero3.json
+# Deepspeed config path. e.g., deepspeed_configs/zero3.json
 deepspeed:
 
 # Advanced DDP Arguments
@@ -979,11 +1004,11 @@ for deepspeed is available at https://huggingface.co/docs/accelerate/main/en/usa
 We provide several default deepspeed JSON configurations for ZeRO stage 1, 2, and 3.
 
 ```yaml
-deepspeed: deepspeed/zero1.json
+deepspeed: deepspeed_configs/zero1.json
 ```
 
 ```shell
-accelerate launch -m axolotl.cli.train examples/llama-2/config.py --deepspeed deepspeed/zero1.json
+accelerate launch -m axolotl.cli.train examples/llama-2/config.py --deepspeed deepspeed_configs/zero1.json
 ```
 
 ##### FSDP
@@ -1122,7 +1147,7 @@ If you decode a prompt constructed by axolotl, you might see spaces between toke
 1. Materialize some data using `python -m axolotl.cli.preprocess your_config.yml --debug`, and then decode the first few rows with your model's tokenizer.
 2. During inference, right before you pass a tensor of token ids to your model, decode these tokens back into a string.
 3. Make sure the inference string from #2 looks **exactly** like the data you fine tuned on from #1, including spaces and new lines.  If they aren't the same adjust your inference server accordingly.
-4. As an additional troubleshooting step, you can look look at the token ids between 1 and 2 to make sure they are identical.
+4. As an additional troubleshooting step, you can look at the token ids between 1 and 2 to make sure they are identical.
 
 Having misalignment between your prompts during training and inference can cause models to perform very poorly, so it is worth checking this.  See [this blog post](https://hamel.dev/notes/llm/05_tokenizer_gotchas.html) for a concrete example.
 
@@ -1130,9 +1155,11 @@ Having misalignment between your prompts during training and inference can cause
 
 See [this debugging guide](docs/debugging.md) for tips on debugging Axolotl, along with an example configuration for debugging with VSCode.
 
-## Need help? 🙋♂️
+## Need help? 🙋
 
-Join our [Discord server](https://discord.gg/HhrNrHJPRb) where we can help you
+Join our [Discord server](https://discord.gg/HhrNrHJPRb) where we our community members can help you.
+
+Need dedicated support? Please contact us at [✉️wing@openaccessaicollective.org](mailto:wing@openaccessaicollective.org) for dedicated support options.
 
 ## Badge ❤🏷️
 

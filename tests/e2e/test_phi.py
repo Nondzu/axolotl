@@ -7,9 +7,6 @@ import os
 import unittest
 from pathlib import Path
 
-import pytest
-from transformers.utils import is_torch_bf16_gpu_available
-
 from axolotl.cli import load_datasets
 from axolotl.common.cli import TrainerCliArgs
 from axolotl.train import train
@@ -27,17 +24,15 @@ class TestPhi(unittest.TestCase):
     Test case for Phi2 models
     """
 
-    @pytest.mark.skip(reason="fixme later")
     @with_temp_dir
-    def test_phi2_ft(self, temp_dir):
+    def test_phi_ft(self, temp_dir):
         # pylint: disable=duplicate-code
         cfg = DictDefault(
             {
-                "base_model": "microsoft/phi-2",
-                "trust_remote_code": True,
+                "base_model": "microsoft/phi-1_5",
                 "model_type": "AutoModelForCausalLM",
                 "tokenizer_type": "AutoTokenizer",
-                "sequence_len": 512,
+                "sequence_len": 2048,
                 "sample_packing": False,
                 "load_in_8bit": False,
                 "adapter": None,
@@ -64,13 +59,9 @@ class TestPhi(unittest.TestCase):
                 "max_steps": 10,
                 "save_steps": 10,
                 "eval_steps": 10,
-                "save_safetensors": True,
+                "bf16": "auto",
             }
         )
-        if is_torch_bf16_gpu_available():
-            cfg.bf16 = True
-        else:
-            cfg.fp16 = True
         normalize_config(cfg)
         cli_args = TrainerCliArgs()
         dataset_meta = load_datasets(cfg=cfg, cli_args=cli_args)
@@ -78,25 +69,24 @@ class TestPhi(unittest.TestCase):
         train(cfg=cfg, cli_args=cli_args, dataset_meta=dataset_meta)
         assert (Path(temp_dir) / "pytorch_model.bin").exists()
 
-    @pytest.mark.skip(reason="multipack no longer supported atm")
     @with_temp_dir
-    def test_ft_packed(self, temp_dir):
+    def test_phi_qlora(self, temp_dir):
         # pylint: disable=duplicate-code
         cfg = DictDefault(
             {
-                "base_model": "microsoft/phi-2",
-                "trust_remote_code": True,
-                "model_type": "PhiForCausalLM",
+                "base_model": "microsoft/phi-1_5",
+                "model_type": "AutoModelForCausalLM",
                 "tokenizer_type": "AutoTokenizer",
-                "sequence_len": 512,
-                "sample_packing": True,
+                "sequence_len": 2048,
+                "sample_packing": False,
                 "load_in_8bit": False,
-                "adapter": None,
+                "adapter": "qlora",
+                "lora_r": 64,
+                "lora_alpha": 32,
+                "lora_dropout": 0.05,
+                "lora_target_linear": True,
                 "val_set_size": 0.1,
                 "special_tokens": {
-                    "unk_token": "<|endoftext|>",
-                    "bos_token": "<|endoftext|>",
-                    "eos_token": "<|endoftext|>",
                     "pad_token": "<|endoftext|>",
                 },
                 "datasets": [
@@ -112,18 +102,18 @@ class TestPhi(unittest.TestCase):
                 "gradient_accumulation_steps": 1,
                 "output_dir": temp_dir,
                 "learning_rate": 0.00001,
-                "optimizer": "adamw_bnb_8bit",
+                "optimizer": "paged_adamw_8bit",
                 "lr_scheduler": "cosine",
+                "flash_attention": True,
+                "max_steps": 10,
+                "save_steps": 10,
+                "eval_steps": 10,
+                "bf16": "auto",
             }
         )
-        if is_torch_bf16_gpu_available():
-            cfg.bf16 = True
-        else:
-            cfg.fp16 = True
-
         normalize_config(cfg)
         cli_args = TrainerCliArgs()
         dataset_meta = load_datasets(cfg=cfg, cli_args=cli_args)
 
         train(cfg=cfg, cli_args=cli_args, dataset_meta=dataset_meta)
-        assert (Path(temp_dir) / "pytorch_model.bin").exists()
+        assert (Path(temp_dir) / "adapter_model.bin").exists()
